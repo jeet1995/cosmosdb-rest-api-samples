@@ -6,6 +6,7 @@ import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager;
 import org.apache.hc.core5.http.ContentType;
+import org.apache.hc.core5.http.Header;
 import org.apache.hc.core5.http.ParseException;
 import org.apache.hc.core5.http.io.entity.EntityUtils;
 import org.apache.hc.core5.http.io.entity.StringEntity;
@@ -17,6 +18,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -26,6 +28,7 @@ import java.util.UUID;
 public class CosmosDbQuerySample {
     private static final Logger logger = LoggerFactory.getLogger(CosmosDbQuerySample.class);
     private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final String URL_FORMAT = "https://%s.documents.azure.com/dbs/%s/colls/%s/docs";
     
     // CosmosDB connection properties
     private final String endpoint;
@@ -57,7 +60,8 @@ public class CosmosDbQuerySample {
      * @throws IOException If an I/O error occurs
      */
     public String executeQuery(String query, int maxItemCount) throws IOException {
-        return executeQueryWithContinuation(query, maxItemCount, null);
+        Page page = executeQueryWithContinuation(query, maxItemCount, null);
+        return page.getResponseBody();
     }
     
     /**
@@ -68,7 +72,8 @@ public class CosmosDbQuerySample {
      * @throws IOException If an I/O error occurs
      */
     public String executeQuery(String query) throws IOException {
-        return executeQueryWithContinuation(query, 100, null);
+        Page page = executeQueryWithContinuation(query, 100, null);
+        return page.getResponseBody();
     }
     
     /**
@@ -77,12 +82,12 @@ public class CosmosDbQuerySample {
      * @param query The SQL query to execute
      * @param maxItemCount Maximum number of items to return per page (1-1000)
      * @param continuationToken Continuation token for pagination
-     * @return The query results as a JSON string
+     * @return The query results as a Page object containing the response body and continuation token
      * @throws IOException If an I/O error occurs
      */
-    private String executeQueryWithContinuation(String query, int maxItemCount, String continuationToken) throws IOException {
+    private Page executeQueryWithContinuation(String query, int maxItemCount, String continuationToken) throws IOException {
         // Build the request URL
-        String url = String.format("%s/dbs/%s/colls/%s/docs", endpoint, databaseId, containerId);
+        String url = String.format(URL_FORMAT, endpoint, databaseId, containerId);
         
         // Create the request body
         Map<String, Object> requestBody = new HashMap<>();
@@ -127,7 +132,26 @@ public class CosmosDbQuerySample {
                 
                 logger.info("Query response status: {}", statusCode);
                 if (statusCode >= 200 && statusCode < 300) {
-                    return responseBody;
+                    // Extract continuation token from response headers
+                    String nextContinuationToken = null;
+                    Header continuationHeader = response.getHeader("x-ms-continuation");
+                    if (continuationHeader != null) {
+                        nextContinuationToken = continuationHeader.getValue();
+                        logger.info("Continuation token found: {}", nextContinuationToken);
+                    }
+                    
+                    // Parse the response to extract documents
+                    List<Map<String, Object>> documents = null;
+                    try {
+                        Map<String, Object> responseMap = objectMapper.readValue(responseBody, Map.class);
+                        if (responseMap.containsKey("Documents")) {
+                            documents = (List<Map<String, Object>>) responseMap.get("Documents");
+                        }
+                    } catch (Exception e) {
+                        logger.warn("Failed to parse documents from response", e);
+                    }
+                    
+                    return new Page(responseBody, documents, nextContinuationToken);
                 } else {
                     logger.error("Query failed with status {}: {}", statusCode, responseBody);
                     throw new IOException("Query failed with status " + statusCode + ": " + responseBody);
@@ -169,9 +193,11 @@ public class CosmosDbQuerySample {
             logger.info("Fetching page {} of results", pageCount);
             
             // Execute query with continuation token
-            String responseBody = executeQueryWithContinuation(query, maxItemCount, continuationToken);
+            Page page = executeQueryWithContinuation(query, maxItemCount, continuationToken);
+            String responseBody = page.getResponseBody();
+            continuationToken = page.getContinuationToken();
             
-            // Parse the response to get the continuation token
+            // Parse the response
             try {
                 Map<String, Object> responseMap = objectMapper.readValue(responseBody, Map.class);
                 
@@ -187,17 +213,6 @@ public class CosmosDbQuerySample {
                     // Remove the opening and closing brackets
                     documentsJson = documentsJson.substring(1, documentsJson.length() - 1);
                     allResults.append(documentsJson);
-                }
-                
-                // Get the continuation token from the response headers
-                // In a real implementation, you would get this from the response headers
-                // For this example, we'll simulate it by checking if there are more results
-                if (responseMap.containsKey("_count") && 
-                    (Integer)responseMap.get("_count") == maxItemCount) {
-                    // Simulate a continuation token
-                    continuationToken = "continuation-token-" + pageCount;
-                } else {
-                    continuationToken = null;
                 }
                 
             } catch (Exception e) {
@@ -221,7 +236,8 @@ public class CosmosDbQuerySample {
      * @throws IOException If an I/O error occurs
      */
     public String executeParameterizedQuery(String query, Map<String, Object> parameters, int maxItemCount) throws IOException {
-        return executeParameterizedQueryWithContinuation(query, parameters, maxItemCount, null);
+        Page page = executeParameterizedQueryWithContinuation(query, parameters, maxItemCount, null);
+        return page.getResponseBody();
     }
     
     /**
@@ -233,7 +249,8 @@ public class CosmosDbQuerySample {
      * @throws IOException If an I/O error occurs
      */
     public String executeParameterizedQuery(String query, Map<String, Object> parameters) throws IOException {
-        return executeParameterizedQueryWithContinuation(query, parameters, 100, null);
+        Page page = executeParameterizedQueryWithContinuation(query, parameters, 100, null);
+        return page.getResponseBody();
     }
     
     /**
@@ -243,12 +260,12 @@ public class CosmosDbQuerySample {
      * @param parameters The parameters for the query
      * @param maxItemCount Maximum number of items to return per page (1-1000)
      * @param continuationToken Continuation token for pagination
-     * @return The query results as a JSON string
+     * @return The query results as a Page object containing the response body and continuation token
      * @throws IOException If an I/O error occurs
      */
-    private String executeParameterizedQueryWithContinuation(String query, Map<String, Object> parameters, int maxItemCount, String continuationToken) throws IOException {
+    private Page executeParameterizedQueryWithContinuation(String query, Map<String, Object> parameters, int maxItemCount, String continuationToken) throws IOException {
         // Build the request URL
-        String url = String.format("%s/dbs/%s/colls/%s/docs", endpoint, databaseId, containerId);
+        String url = String.format(URL_FORMAT, endpoint, databaseId, containerId);
         
         // Create the request body with parameters
         Map<String, Object> requestBody = new HashMap<>();
@@ -303,7 +320,26 @@ public class CosmosDbQuerySample {
                 
                 logger.info("Query response status: {}", statusCode);
                 if (statusCode >= 200 && statusCode < 300) {
-                    return responseBody;
+                    // Extract continuation token from response headers
+                    String nextContinuationToken = null;
+                    Header continuationHeader = response.getHeader("x-ms-continuation");
+                    if (continuationHeader != null) {
+                        nextContinuationToken = continuationHeader.getValue();
+                        logger.info("Continuation token found: {}", nextContinuationToken);
+                    }
+                    
+                    // Parse the response to extract documents
+                    List<Map<String, Object>> documents = null;
+                    try {
+                        Map<String, Object> responseMap = objectMapper.readValue(responseBody, Map.class);
+                        if (responseMap.containsKey("Documents")) {
+                            documents = (List<Map<String, Object>>) responseMap.get("Documents");
+                        }
+                    } catch (Exception e) {
+                        logger.warn("Failed to parse documents from response", e);
+                    }
+                    
+                    return new Page(responseBody, documents, nextContinuationToken);
                 } else {
                     logger.error("Query failed with status {}: {}", statusCode, responseBody);
                     throw new IOException("Query failed with status " + statusCode + ": " + responseBody);
@@ -331,9 +367,11 @@ public class CosmosDbQuerySample {
             logger.info("Fetching page {} of parameterized query results", pageCount);
             
             // Execute query with continuation token
-            String responseBody = executeParameterizedQueryWithContinuation(query, parameters, maxItemCount, continuationToken);
+            Page page = executeParameterizedQueryWithContinuation(query, parameters, maxItemCount, continuationToken);
+            String responseBody = page.getResponseBody();
+            continuationToken = page.getContinuationToken();
             
-            // Parse the response to get the continuation token
+            // Parse the response
             try {
                 Map<String, Object> responseMap = objectMapper.readValue(responseBody, Map.class);
                 
@@ -349,17 +387,6 @@ public class CosmosDbQuerySample {
                     // Remove the opening and closing brackets
                     documentsJson = documentsJson.substring(1, documentsJson.length() - 1);
                     allResults.append(documentsJson);
-                }
-                
-                // Get the continuation token from the response headers
-                // In a real implementation, you would get this from the response headers
-                // For this example, we'll simulate it by checking if there are more results
-                if (responseMap.containsKey("_count") && 
-                    (Integer)responseMap.get("_count") == maxItemCount) {
-                    // Simulate a continuation token
-                    continuationToken = "continuation-token-" + pageCount;
-                } else {
-                    continuationToken = null;
                 }
                 
             } catch (Exception e) {
@@ -423,13 +450,72 @@ public class CosmosDbQuerySample {
     }
     
     /**
+     * Class to represent a page of query results.
+     * Contains the raw response body, parsed documents, and continuation token.
+     */
+    public static class Page {
+        private final String responseBody;
+        private final List<Map<String, Object>> documents;
+        private final String continuationToken;
+        
+        /**
+         * Constructor for Page.
+         * 
+         * @param responseBody The raw response body as a JSON string
+         * @param documents The parsed documents from the response
+         * @param continuationToken The continuation token for the next page
+         */
+        public Page(String responseBody, List<Map<String, Object>> documents, String continuationToken) {
+            this.responseBody = responseBody;
+            this.documents = documents;
+            this.continuationToken = continuationToken;
+        }
+        
+        /**
+         * Gets the raw response body.
+         * 
+         * @return The response body as a JSON string
+         */
+        public String getResponseBody() {
+            return responseBody;
+        }
+        
+        /**
+         * Gets the parsed documents from the response.
+         * 
+         * @return The list of documents
+         */
+        public List<Map<String, Object>> getDocuments() {
+            return documents;
+        }
+        
+        /**
+         * Gets the continuation token for the next page.
+         * 
+         * @return The continuation token, or null if there are no more pages
+         */
+        public String getContinuationToken() {
+            return continuationToken;
+        }
+        
+        /**
+         * Checks if there are more pages available.
+         * 
+         * @return true if there are more pages, false otherwise
+         */
+        public boolean hasMorePages() {
+            return continuationToken != null && !continuationToken.isEmpty();
+        }
+    }
+    
+    /**
      * Main method to demonstrate the usage of CosmosDbQuerySample.
      * 
      * @param args Command line arguments
      */
     public static void main(String[] args) {
         // Replace these with your actual CosmosDB connection details
-        String endpoint = "https://your-cosmosdb-account.documents.azure.com";
+        String endpoint = "your-cosmosdb-account";
         String masterKey = "your-master-key";
         String databaseId = "your-database-id";
         String containerId = "your-container-id";
