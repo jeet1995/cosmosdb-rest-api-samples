@@ -1,5 +1,6 @@
 package com.example.cosmosdb.query;
 
+import com.azure.cosmos.implementation.TestConfigurations;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.hc.client5.http.classic.methods.HttpPost;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
@@ -24,8 +25,10 @@ import java.util.UUID;
  * Sample class demonstrating how to query Azure Cosmos DB using the REST API.
  */
 public class CosmosDbQuerySample {
+
     private static final Logger logger = LoggerFactory.getLogger(CosmosDbQuerySample.class);
     private static final ObjectMapper objectMapper = new ObjectMapper();
+    private static final String URL_FORMAT = "https://%s.documents.azure.com/dbs/%s/colls/%s/docs";
     
     // CosmosDB connection properties
     private final String endpoint;
@@ -82,7 +85,7 @@ public class CosmosDbQuerySample {
      */
     private String executeQueryWithContinuation(String query, int maxItemCount, String continuationToken) throws IOException {
         // Build the request URL
-        String url = String.format("%s/dbs/%s/colls/%s/docs", endpoint, databaseId, containerId);
+        String url = String.format(URL_FORMAT, endpoint, databaseId, containerId);
         
         // Create the request body
         Map<String, Object> requestBody = new HashMap<>();
@@ -233,7 +236,7 @@ public class CosmosDbQuerySample {
      */
     private String executeParameterizedQueryWithContinuation(String query, Map<String, Object> parameters, int maxItemCount, String continuationToken) throws IOException {
         // Build the request URL
-        String url = String.format("%s/dbs/%s/colls/%s/docs", endpoint, databaseId, containerId);
+        String url = String.format(URL_FORMAT, endpoint, databaseId, containerId);
         
         // Create the request body with parameters
         Map<String, Object> requestBody = new HashMap<>();
@@ -259,8 +262,6 @@ public class CosmosDbQuerySample {
             
             // Set required headers
             httpPost.setHeader("Content-Type", "application/query+json");
-            httpPost.setHeader("x-ms-date", getCurrentUtcDate());
-            httpPost.setHeader("x-ms-version", "2018-12-31");
             httpPost.setHeader("x-ms-documentdb-isquery", "true");
             httpPost.setHeader("x-ms-documentdb-query-enablecrosspartition", "true");
             httpPost.setHeader("x-ms-max-item-count", String.valueOf(maxItemCount));
@@ -414,50 +415,21 @@ public class CosmosDbQuerySample {
      */
     public static void main(String[] args) {
         // Replace these with your actual CosmosDB connection details
-        String endpoint = "https://your-cosmosdb-account.documents.azure.com";
-        String masterKey = "your-master-key";
-        String databaseId = "your-database-id";
-        String containerId = "your-container-id";
+        String endpoint = TestConfigurations.HOST;
+        String masterKey = TestConfigurations.MASTER_KEY;
+        String databaseId = "CRI";
+        String containerId = "AdobeQuery";
         
         try {
             CosmosDbQuerySample sample = new CosmosDbQuerySample(endpoint, masterKey, databaseId, containerId);
             
             // Example 1: Simple query - Select all documents
-            System.out.println("\n--- Example 1: Simple Query ---");
-            String simpleQuery = "SELECT * FROM c";
-            String simpleResult = sample.executeQuery(simpleQuery);
-            System.out.println("Query: " + simpleQuery);
-            System.out.println("Result: " + simpleResult);
-            
-            // Example 2: Parameterized query - Select documents by id
-            System.out.println("\n--- Example 2: Parameterized Query ---");
-            String parameterizedQuery = "SELECT * FROM c WHERE c.id = @id";
-            Map<String, Object> parameters = new HashMap<>();
-            parameters.put("@id", "document-id");
-            String parameterizedResult = sample.executeParameterizedQuery(parameterizedQuery, parameters);
-            System.out.println("Query: " + parameterizedQuery);
-            System.out.println("Parameters: " + parameters);
-            System.out.println("Result: " + parameterizedResult);
-            
-            // Example 3: Query with multiple parameters
-            System.out.println("\n--- Example 3: Query with Multiple Parameters ---");
-            String multiParamQuery = "SELECT * FROM c WHERE c.category = @category AND c.price > @price";
-            Map<String, Object> multiParams = new HashMap<>();
-            multiParams.put("@category", "electronics");
-            multiParams.put("@price", 100);
-            String multiParamResult = sample.executeParameterizedQuery(multiParamQuery, multiParams);
-            System.out.println("Query: " + multiParamQuery);
-            System.out.println("Parameters: " + multiParams);
-            System.out.println("Result: " + multiParamResult);
-            
-            // Example 4: Pagination - Query with max item count
-            System.out.println("\n--- Example 4: Pagination with Max Item Count ---");
-            String paginationQuery = "SELECT * FROM c";
-            String paginationResult = sample.executeQuery(paginationQuery, 10); // Limit to 10 items per page
-            System.out.println("Query: " + paginationQuery);
-            System.out.println("Max Item Count: 10");
-            System.out.println("Result: " + paginationResult);
-            
+//            System.out.println("\n--- Example 1: Simple Query ---");
+//            String simpleQuery = "SELECT * FROM c";
+//            String simpleResult = sample.executeQuery(simpleQuery);
+//            System.out.println("Query: " + simpleQuery);
+//            System.out.println("Result: " + simpleResult);
+
             // Example 5: Fetch all pages
             System.out.println("\n--- Example 5: Fetch All Pages ---");
             String allPagesQuery = "SELECT * FROM c";
@@ -465,29 +437,7 @@ public class CosmosDbQuerySample {
             System.out.println("Query: " + allPagesQuery);
             System.out.println("Max Item Count: 10");
             System.out.println("Result (all pages): " + allPagesResult);
-            
-            // Example 6: Parameterized query with pagination
-            System.out.println("\n--- Example 6: Parameterized Query with Pagination ---");
-            String paramPaginationQuery = "SELECT * FROM c WHERE c.category = @category";
-            Map<String, Object> paramPaginationParams = new HashMap<>();
-            paramPaginationParams.put("@category", "electronics");
-            String paramPaginationResult = sample.executeParameterizedQuery(paramPaginationQuery, paramPaginationParams, 5); // 5 items per page
-            System.out.println("Query: " + paramPaginationQuery);
-            System.out.println("Parameters: " + paramPaginationParams);
-            System.out.println("Max Item Count: 5");
-            System.out.println("Result: " + paramPaginationResult);
-            
-            // Example 7: Parameterized query with all pages
-            System.out.println("\n--- Example 7: Parameterized Query with All Pages ---");
-            String paramAllPagesQuery = "SELECT * FROM c WHERE c.category = @category";
-            Map<String, Object> paramAllPagesParams = new HashMap<>();
-            paramAllPagesParams.put("@category", "electronics");
-            String paramAllPagesResult = sample.executeParameterizedQueryAllPages(paramAllPagesQuery, paramAllPagesParams, 5); // 5 items per page
-            System.out.println("Query: " + paramAllPagesQuery);
-            System.out.println("Parameters: " + paramAllPagesParams);
-            System.out.println("Max Item Count: 5");
-            System.out.println("Result (all pages): " + paramAllPagesResult);
-            
+
         } catch (IOException e) {
             logger.error("Error executing query", e);
         }
