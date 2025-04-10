@@ -18,6 +18,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -43,18 +44,13 @@ public class CosmosDbQuerySample {
 
     // HTTP Headers
     private static final String HEADER_CONTENT_TYPE = "Content-Type";
-    private static final String HEADER_CONTENT_TYPE_VALUE = "application/query+json";
     private static final String HEADER_MS_VERSION = "x-ms-version";
-    private static final String HEADER_MS_VERSION_VALUE = "2018-12-31";
     private static final String HEADER_MS_DATE = "x-ms-date";
     private static final String HEADER_MS_DOCUMENTDB_IS_QUERY = "x-ms-documentdb-isquery";
-    private static final String HEADER_MS_DOCUMENTDB_IS_QUERY_VALUE = "true";
     private static final String HEADER_MS_DOCUMENTDB_QUERY_ENABLE_CROSS_PARTITION = "x-ms-documentdb-query-enablecrosspartition";
-    private static final String HEADER_MS_DOCUMENTDB_QUERY_ENABLE_CROSS_PARTITION_VALUE = "true";
     private static final String HEADER_MS_MAX_ITEM_COUNT = "x-ms-max-item-count";
     private static final String HEADER_MS_COSMOS_CORRELATED_ACTIVITY_ID = "x-ms-cosmos-correlated-activityid";
     private static final String HEADER_MS_DOCUMENTDB_RESPONSE_CONTINUATION_TOKEN_LIMIT_IN_KB = "x-ms-documentdb-responsecontinuationtokenlimitinkb";
-    private static final String HEADER_MS_DOCUMENTDB_RESPONSE_CONTINUATION_TOKEN_LIMIT_IN_KB_VALUE = "2";
     private static final String HEADER_MS_CONTINUATION = "x-ms-continuation";
     private static final String HEADER_AUTHORIZATION = "Authorization";
 
@@ -99,7 +95,7 @@ public class CosmosDbQuerySample {
      * Executes a SQL query against CosmosDB with pagination support.
      * 
      * @param query The SQL query to execute
-     * @param maxItemCount Maximum number of items to return per page (1-1000)
+     * @param maxItemCount Maximum number of items to return per page
      * @param continuationToken Continuation token for pagination
      * @param correlatedActivityId The correlated activity ID for tracking related requests
      * @return The query results as a Page object containing the response body and continuation token
@@ -122,18 +118,18 @@ public class CosmosDbQuerySample {
         HttpPost httpPost = new HttpPost(url);
         
         // Set required headers
-        httpPost.setHeader(HEADER_CONTENT_TYPE, HEADER_CONTENT_TYPE_VALUE);
-        httpPost.setHeader(HEADER_MS_VERSION, HEADER_MS_VERSION_VALUE);
+        httpPost.setHeader(HEADER_CONTENT_TYPE, "application/query+json");
+        httpPost.setHeader(HEADER_MS_VERSION, "2018-12-31");
         httpPost.setHeader(HEADER_MS_DATE, getCurrentUtcDate());
-        httpPost.setHeader(HEADER_MS_DOCUMENTDB_IS_QUERY, HEADER_MS_DOCUMENTDB_IS_QUERY_VALUE);
-        httpPost.setHeader(HEADER_MS_DOCUMENTDB_QUERY_ENABLE_CROSS_PARTITION, HEADER_MS_DOCUMENTDB_QUERY_ENABLE_CROSS_PARTITION_VALUE);
+        httpPost.setHeader(HEADER_MS_DOCUMENTDB_IS_QUERY, "true");
+        httpPost.setHeader(HEADER_MS_DOCUMENTDB_QUERY_ENABLE_CROSS_PARTITION, "true");
         httpPost.setHeader(HEADER_MS_MAX_ITEM_COUNT, String.valueOf(maxItemCount));
         
         // Add correlated activity ID header
         httpPost.setHeader(HEADER_MS_COSMOS_CORRELATED_ACTIVITY_ID, correlatedActivityId);
         
         // Set continuation token size limit to 2KB
-        httpPost.setHeader(HEADER_MS_DOCUMENTDB_RESPONSE_CONTINUATION_TOKEN_LIMIT_IN_KB, HEADER_MS_DOCUMENTDB_RESPONSE_CONTINUATION_TOKEN_LIMIT_IN_KB_VALUE);
+        httpPost.setHeader(HEADER_MS_DOCUMENTDB_RESPONSE_CONTINUATION_TOKEN_LIMIT_IN_KB, "2");
         
         // Add continuation token if provided
         if (continuationToken != null && !continuationToken.isEmpty()) {
@@ -147,7 +143,10 @@ public class CosmosDbQuerySample {
         
         // Execute request using response handler
         System.out.println("Executing query: " + query + " with maxItemCount: " + maxItemCount);
-        
+
+        // Parse the response to extract documents
+        final List<Map<String, Object>> documents = new ArrayList<>();
+
         // Execute the request with the response handler
         return getHttpClient().execute(httpPost, response -> {
             int statusCode = response.getCode();
@@ -167,13 +166,14 @@ public class CosmosDbQuerySample {
                     nextContinuationToken = continuationHeader.getValue();
                     System.out.println("Continuation token found: " + nextContinuationToken);
                 }
-                
-                // Parse the response to extract documents
-                List<Map<String, Object>> documents = null;
+
                 try {
                     Map<String, Object> responseMap = objectMapper.readValue(responseBody, Map.class);
                     if (responseMap.containsKey("Documents")) {
-                        documents = (List<Map<String, Object>>) responseMap.get("Documents");
+
+                        List<Map<String, Object>> documentsFromResponse = (List<Map<String, Object>>)responseMap.get("Documents");
+
+                        documents.addAll(documentsFromResponse);
                     }
                 } catch (Exception e) {
                     System.out.println("Failed to parse documents from response: " + e.getMessage());
@@ -342,9 +342,9 @@ public class CosmosDbQuerySample {
             CosmosDbQuerySample sample = new CosmosDbQuerySample(endpoint, masterKey, databaseId, containerId);
 
             // Example: Count all documents with pagination
-            System.out.println("\n--- Example 5: Query with where clause ---");
+            System.out.println("\n--- Query with where clause ---");
             String queryWithWhereClause = "SELECT * FROM c WHERE c.expectedProcessTime >= '2019-06-01T00:00' AND c.expectedProcessTime <= '2039-06-01T00:00'";
-            int totalItemCount = sample.executeQueryAllPages(queryWithWhereClause, 10); // 10 items per page
+            int totalItemCount = sample.executeQueryAllPages(queryWithWhereClause, 52); // 10 items per page
             System.out.println("Query: " + queryWithWhereClause);
             System.out.println("Max Item Count: 10");
             System.out.println("Total documents: " + totalItemCount);
