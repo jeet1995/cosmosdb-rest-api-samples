@@ -56,24 +56,16 @@ public class CosmosDbQuerySample {
      * 
      * @param query The SQL query to execute
      * @param maxItemCount Maximum number of items to return per page (1-1000)
-     * @return The query results as a JSON string
+     * @param continuationToken Continuation token for pagination
+     * @return The query results as a Page object containing the response body and continuation token
      * @throws IOException If an I/O error occurs
      */
-    public String executeQuery(String query, int maxItemCount) throws IOException {
-        Page page = executeQueryWithContinuation(query, maxItemCount, null);
-        return page.getResponseBody();
-    }
-    
-    /**
-     * Executes a SQL query against CosmosDB with pagination support.
-     * 
-     * @param query The SQL query to execute
-     * @return The query results as a JSON string
-     * @throws IOException If an I/O error occurs
-     */
-    public String executeQuery(String query) throws IOException {
-        Page page = executeQueryWithContinuation(query, 100, null);
-        return page.getResponseBody();
+    private Page executeQueryWithContinuation(String query, int maxItemCount, String continuationToken) throws IOException {
+        // Generate a correlated activity ID for this query
+        String correlatedActivityId = UUID.randomUUID().toString();
+        logger.info("Generated correlated activity ID: {}", correlatedActivityId);
+        
+        return executeQueryWithContinuation(query, maxItemCount, continuationToken, correlatedActivityId);
     }
     
     /**
@@ -82,10 +74,11 @@ public class CosmosDbQuerySample {
      * @param query The SQL query to execute
      * @param maxItemCount Maximum number of items to return per page (1-1000)
      * @param continuationToken Continuation token for pagination
+     * @param correlatedActivityId The correlated activity ID for tracking related requests
      * @return The query results as a Page object containing the response body and continuation token
      * @throws IOException If an I/O error occurs
      */
-    private Page executeQueryWithContinuation(String query, int maxItemCount, String continuationToken) throws IOException {
+    private Page executeQueryWithContinuation(String query, int maxItemCount, String continuationToken, String correlatedActivityId) throws IOException {
         // Build the request URL
         String url = String.format(URL_FORMAT, endpoint, databaseId, containerId);
         
@@ -108,6 +101,12 @@ public class CosmosDbQuerySample {
             httpPost.setHeader("x-ms-documentdb-isquery", "true");
             httpPost.setHeader("x-ms-documentdb-query-enablecrosspartition", "true");
             httpPost.setHeader("x-ms-max-item-count", String.valueOf(maxItemCount));
+            
+            // Add correlated activity ID header
+            httpPost.setHeader("x-ms-cosmos-correlated-activityid", correlatedActivityId);
+            
+            // Set continuation token size limit to 2KB
+            httpPost.setHeader("x-ms-documentdb-responsecontinuationtokenlimitinkb", "2");
             
             // Add continuation token if provided
             if (continuationToken != null && !continuationToken.isEmpty()) {
@@ -161,18 +160,36 @@ public class CosmosDbQuerySample {
     }
     
     /**
-     * Creates an HTTP client with connection pooling.
+     * Executes a SQL query against CosmosDB with pagination support.
      * 
-     * @return A configured HTTP client
+     * @param query The SQL query to execute
+     * @param maxItemCount Maximum number of items to return per page (1-1000)
+     * @return The query results as a JSON string
+     * @throws IOException If an I/O error occurs
      */
-    private CloseableHttpClient createHttpClient() {
-        PoolingHttpClientConnectionManager connectionManager = new PoolingHttpClientConnectionManager();
-        connectionManager.setMaxTotal(100);
-        connectionManager.setDefaultMaxPerRoute(20);
+    public String executeQuery(String query, int maxItemCount) throws IOException {
+        // Generate a correlated activity ID for this query
+        String correlatedActivityId = UUID.randomUUID().toString();
+        logger.info("Generated correlated activity ID: {}", correlatedActivityId);
         
-        return HttpClients.custom()
-                .setConnectionManager(connectionManager)
-                .build();
+        Page page = executeQueryWithContinuation(query, maxItemCount, null, correlatedActivityId);
+        return page.getResponseBody();
+    }
+    
+    /**
+     * Executes a SQL query against CosmosDB with pagination support.
+     * 
+     * @param query The SQL query to execute
+     * @return The query results as a JSON string
+     * @throws IOException If an I/O error occurs
+     */
+    public String executeQuery(String query) throws IOException {
+        // Generate a correlated activity ID for this query
+        String correlatedActivityId = UUID.randomUUID().toString();
+        logger.info("Generated correlated activity ID: {}", correlatedActivityId);
+        
+        Page page = executeQueryWithContinuation(query, 100, null, correlatedActivityId);
+        return page.getResponseBody();
     }
     
     /**
@@ -180,77 +197,37 @@ public class CosmosDbQuerySample {
      * 
      * @param query The SQL query to execute
      * @param maxItemCount Maximum number of items to return per page (1-1000)
-     * @return All query results as a JSON string
+     * @return The total count of documents returned
      * @throws IOException If an I/O error occurs
      */
-    public String executeQueryAllPages(String query, int maxItemCount) throws IOException {
-        StringBuilder allResults = new StringBuilder();
+    public int executeQueryAllPages(String query, int maxItemCount) throws IOException {
+        int totalDocumentCount = 0;
         String continuationToken = null;
         int pageCount = 0;
+        
+        // Generate a correlated activity ID that will be used across all requests
+        String correlatedActivityId = UUID.randomUUID().toString();
+        logger.info("Generated correlated activity ID: {}", correlatedActivityId);
         
         do {
             pageCount++;
             logger.info("Fetching page {} of results", pageCount);
             
             // Execute query with continuation token
-            Page page = executeQueryWithContinuation(query, maxItemCount, continuationToken);
-            String responseBody = page.getResponseBody();
+            Page page = executeQueryWithContinuation(query, maxItemCount, continuationToken, correlatedActivityId);
             continuationToken = page.getContinuationToken();
             
-            // Parse the response
-            try {
-                Map<String, Object> responseMap = objectMapper.readValue(responseBody, Map.class);
-                
-                // Append the Documents array to our results
-                if (responseMap.containsKey("Documents")) {
-                    if (pageCount > 1) {
-                        // Remove the opening bracket from the first page
-                        allResults.append(",");
-                    }
-                    
-                    // Extract just the Documents array
-                    String documentsJson = objectMapper.writeValueAsString(responseMap.get("Documents"));
-                    // Remove the opening and closing brackets
-                    documentsJson = documentsJson.substring(1, documentsJson.length() - 1);
-                    allResults.append(documentsJson);
-                }
-                
-            } catch (Exception e) {
-                logger.error("Error parsing response", e);
-                throw new IOException("Error parsing response", e);
+            // Count documents in this page
+            if (page.getDocuments() != null) {
+                int pageDocumentCount = page.getDocuments().size();
+                totalDocumentCount += pageDocumentCount;
+                logger.info("Page {} contains {} documents. Total so far: {}", pageCount, pageDocumentCount, totalDocumentCount);
             }
             
         } while (continuationToken != null);
         
-        // Wrap the results in a proper JSON structure
-        return "{\"Documents\":[" + allResults.toString() + "],\"_count\":" + pageCount + "}";
-    }
-    
-    /**
-     * Executes a parameterized SQL query against CosmosDB with pagination support.
-     * 
-     * @param query The SQL query to execute with parameters
-     * @param parameters The parameters for the query
-     * @param maxItemCount Maximum number of items to return per page (1-1000)
-     * @return The query results as a JSON string
-     * @throws IOException If an I/O error occurs
-     */
-    public String executeParameterizedQuery(String query, Map<String, Object> parameters, int maxItemCount) throws IOException {
-        Page page = executeParameterizedQueryWithContinuation(query, parameters, maxItemCount, null);
-        return page.getResponseBody();
-    }
-    
-    /**
-     * Executes a parameterized SQL query against CosmosDB.
-     * 
-     * @param query The SQL query to execute with parameters
-     * @param parameters The parameters for the query
-     * @return The query results as a JSON string
-     * @throws IOException If an I/O error occurs
-     */
-    public String executeParameterizedQuery(String query, Map<String, Object> parameters) throws IOException {
-        Page page = executeParameterizedQueryWithContinuation(query, parameters, 100, null);
-        return page.getResponseBody();
+        logger.info("Query completed. Total pages: {}, Total documents: {}", pageCount, totalDocumentCount);
+        return totalDocumentCount;
     }
     
     /**
@@ -260,10 +237,11 @@ public class CosmosDbQuerySample {
      * @param parameters The parameters for the query
      * @param maxItemCount Maximum number of items to return per page (1-1000)
      * @param continuationToken Continuation token for pagination
+     * @param correlatedActivityId The correlated activity ID for tracking related requests
      * @return The query results as a Page object containing the response body and continuation token
      * @throws IOException If an I/O error occurs
      */
-    private Page executeParameterizedQueryWithContinuation(String query, Map<String, Object> parameters, int maxItemCount, String continuationToken) throws IOException {
+    private Page executeParameterizedQueryWithContinuation(String query, Map<String, Object> parameters, int maxItemCount, String continuationToken, String correlatedActivityId) throws IOException {
         // Build the request URL
         String url = String.format(URL_FORMAT, endpoint, databaseId, containerId);
         
@@ -297,6 +275,12 @@ public class CosmosDbQuerySample {
             httpPost.setHeader("x-ms-documentdb-query-enablecrosspartition", "true");
             httpPost.setHeader("x-ms-max-item-count", String.valueOf(maxItemCount));
             
+            // Add correlated activity ID header
+            httpPost.setHeader("x-ms-cosmos-correlated-activityid", correlatedActivityId);
+            
+            // Set continuation token size limit to 2KB
+            httpPost.setHeader("x-ms-documentdb-responsecontinuationtokenlimitinkb", "2");
+            
             // Add continuation token if provided
             if (continuationToken != null && !continuationToken.isEmpty()) {
                 httpPost.setHeader("x-ms-continuation", continuationToken);
@@ -308,7 +292,7 @@ public class CosmosDbQuerySample {
             httpPost.setEntity(new StringEntity(jsonBody, ContentType.APPLICATION_JSON));
             
             // Execute request using response handler
-            logger.info("Executing parameterized query: {} with parameters: {} and maxItemCount: {}", query, parameters, maxItemCount);
+            logger.info("Executing parameterized query: {} with parameters: {} and maxItemCount: {} and correlated activity ID: {}", query, parameters, maxItemCount, correlatedActivityId);
             return httpClient.execute(httpPost, response -> {
                 int statusCode = response.getCode();
                 String responseBody;
@@ -349,55 +333,77 @@ public class CosmosDbQuerySample {
     }
     
     /**
+     * Executes a parameterized SQL query against CosmosDB with pagination support.
+     * 
+     * @param query The SQL query to execute with parameters
+     * @param parameters The parameters for the query
+     * @param maxItemCount Maximum number of items to return per page (1-1000)
+     * @return The query results as a JSON string
+     * @throws IOException If an I/O error occurs
+     */
+    public String executeParameterizedQuery(String query, Map<String, Object> parameters, int maxItemCount) throws IOException {
+        // Generate a correlated activity ID for this query
+        String correlatedActivityId = UUID.randomUUID().toString();
+        logger.info("Generated correlated activity ID: {}", correlatedActivityId);
+        
+        Page page = executeParameterizedQueryWithContinuation(query, parameters, maxItemCount, null, correlatedActivityId);
+        return page.getResponseBody();
+    }
+    
+    /**
+     * Executes a parameterized SQL query against CosmosDB.
+     * 
+     * @param query The SQL query to execute with parameters
+     * @param parameters The parameters for the query
+     * @return The query results as a JSON string
+     * @throws IOException If an I/O error occurs
+     */
+    public String executeParameterizedQuery(String query, Map<String, Object> parameters) throws IOException {
+        // Generate a correlated activity ID for this query
+        String correlatedActivityId = UUID.randomUUID().toString();
+        logger.info("Generated correlated activity ID: {}", correlatedActivityId);
+        
+        Page page = executeParameterizedQueryWithContinuation(query, parameters, 100, null, correlatedActivityId);
+        return page.getResponseBody();
+    }
+    
+    /**
      * Executes a parameterized SQL query against CosmosDB and returns all results by handling pagination.
      * 
      * @param query The SQL query to execute with parameters
      * @param parameters The parameters for the query
      * @param maxItemCount Maximum number of items to return per page (1-1000)
-     * @return All query results as a JSON string
+     * @return The total count of documents returned
      * @throws IOException If an I/O error occurs
      */
-    public String executeParameterizedQueryAllPages(String query, Map<String, Object> parameters, int maxItemCount) throws IOException {
-        StringBuilder allResults = new StringBuilder();
+    public int executeParameterizedQueryAllPages(String query, Map<String, Object> parameters, int maxItemCount) throws IOException {
+        int totalDocumentCount = 0;
         String continuationToken = null;
         int pageCount = 0;
+        
+        // Generate a correlated activity ID that will be used across all requests
+        String correlatedActivityId = UUID.randomUUID().toString();
+        logger.info("Generated correlated activity ID: {}", correlatedActivityId);
         
         do {
             pageCount++;
             logger.info("Fetching page {} of parameterized query results", pageCount);
             
             // Execute query with continuation token
-            Page page = executeParameterizedQueryWithContinuation(query, parameters, maxItemCount, continuationToken);
-            String responseBody = page.getResponseBody();
+            Page page = executeParameterizedQueryWithContinuation(query, parameters, maxItemCount, continuationToken, correlatedActivityId);
             continuationToken = page.getContinuationToken();
             
-            // Parse the response
-            try {
-                Map<String, Object> responseMap = objectMapper.readValue(responseBody, Map.class);
-                
-                // Append the Documents array to our results
-                if (responseMap.containsKey("Documents")) {
-                    if (pageCount > 1) {
-                        // Remove the opening bracket from the first page
-                        allResults.append(",");
-                    }
-                    
-                    // Extract just the Documents array
-                    String documentsJson = objectMapper.writeValueAsString(responseMap.get("Documents"));
-                    // Remove the opening and closing brackets
-                    documentsJson = documentsJson.substring(1, documentsJson.length() - 1);
-                    allResults.append(documentsJson);
-                }
-                
-            } catch (Exception e) {
-                logger.error("Error parsing response", e);
-                throw new IOException("Error parsing response", e);
+            // Count documents in this page
+            if (page.getDocuments() != null) {
+                int pageDocumentCount = page.getDocuments().size();
+                totalDocumentCount += pageDocumentCount;
+                logger.info("Page {} contains {} documents. Total so far: {}", pageCount, pageDocumentCount, totalDocumentCount);
             }
             
         } while (continuationToken != null);
         
-        // Wrap the results in a proper JSON structure
-        return "{\"Documents\":[" + allResults.toString() + "],\"_count\":" + pageCount + "}";
+        logger.info("Parameterized query completed. Total pages: {}, Total documents: {}", pageCount, totalDocumentCount);
+        return totalDocumentCount;
     }
     
     /**
@@ -559,13 +565,13 @@ public class CosmosDbQuerySample {
             System.out.println("Max Item Count: 10");
             System.out.println("Result: " + paginationResult);
             
-            // Example 5: Fetch all pages
-            System.out.println("\n--- Example 5: Fetch All Pages ---");
+            // Example 5: Count all documents with pagination
+            System.out.println("\n--- Example 5: Count All Documents ---");
             String allPagesQuery = "SELECT * FROM c";
-            String allPagesResult = sample.executeQueryAllPages(allPagesQuery, 10); // 10 items per page
+            int totalDocuments = sample.executeQueryAllPages(allPagesQuery, 10); // 10 items per page
             System.out.println("Query: " + allPagesQuery);
             System.out.println("Max Item Count: 10");
-            System.out.println("Result (all pages): " + allPagesResult);
+            System.out.println("Total Documents: " + totalDocuments);
             
             // Example 6: Parameterized query with pagination
             System.out.println("\n--- Example 6: Parameterized Query with Pagination ---");
@@ -578,19 +584,34 @@ public class CosmosDbQuerySample {
             System.out.println("Max Item Count: 5");
             System.out.println("Result: " + paramPaginationResult);
             
-            // Example 7: Parameterized query with all pages
-            System.out.println("\n--- Example 7: Parameterized Query with All Pages ---");
+            // Example 7: Count documents with parameterized query
+            System.out.println("\n--- Example 7: Count Documents with Parameterized Query ---");
             String paramAllPagesQuery = "SELECT * FROM c WHERE c.category = @category";
             Map<String, Object> paramAllPagesParams = new HashMap<>();
             paramAllPagesParams.put("@category", "electronics");
-            String paramAllPagesResult = sample.executeParameterizedQueryAllPages(paramAllPagesQuery, paramAllPagesParams, 5); // 5 items per page
+            int totalParamDocuments = sample.executeParameterizedQueryAllPages(paramAllPagesQuery, paramAllPagesParams, 5); // 5 items per page
             System.out.println("Query: " + paramAllPagesQuery);
             System.out.println("Parameters: " + paramAllPagesParams);
             System.out.println("Max Item Count: 5");
-            System.out.println("Result (all pages): " + paramAllPagesResult);
+            System.out.println("Total Documents: " + totalParamDocuments);
             
         } catch (IOException e) {
             logger.error("Error executing query", e);
         }
+    }
+    
+    /**
+     * Creates an HTTP client with connection pooling.
+     * 
+     * @return A configured HTTP client
+     */
+    private CloseableHttpClient createHttpClient() {
+        PoolingHttpClientConnectionManager connectionManager = new PoolingHttpClientConnectionManager();
+        connectionManager.setMaxTotal(100);
+        connectionManager.setDefaultMaxPerRoute(20);
+        
+        return HttpClients.custom()
+                .setConnectionManager(connectionManager)
+                .build();
     }
 } 
