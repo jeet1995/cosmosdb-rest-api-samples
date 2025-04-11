@@ -317,7 +317,7 @@ public class CosmosDbQuerySample {
 
                 String nextContinuationToken = nextPageContinuation.get() != null
                         ? nextPageContinuation.get()
-                        : "";
+                        : null;
 
                 return new Page(pageSizeCompliantDocuments, nextContinuationToken);
             }
@@ -472,7 +472,7 @@ public class CosmosDbQuerySample {
             System.out.println("\n--- Query with where clause ---");
             String queryWithWhereClause = "SELECT * FROM c WHERE c.expectedProcessTime >= '2019-06-01T00:00' AND c.expectedProcessTime <= '2039-06-01T00:00'";
 
-            int maxItemCount = 51;
+            int maxItemCount = 158;
             int totalItemCount = sample.executeQueryAllPages(queryWithWhereClause, maxItemCount);
             System.out.println("Query: " + queryWithWhereClause);
             System.out.println("Max Item Count: " + maxItemCount);
