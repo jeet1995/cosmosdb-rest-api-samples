@@ -197,13 +197,13 @@ public class CosmosDbQuerySample {
      *
      * @param query The SQL query to execute
      * @param pageSize Maximum number of items to return per page
-     * @param wrappedContinuationToken Continuation token for pagination
+     * @param currentContinuationToken Continuation token for pagination
      * @param correlatedActivityId The correlated activity ID for tracking related requests
      * @return The query results as a Page object containing the response body and continuation token
      * @throws IOException If an I/O error occurs
      * @throws ProtocolException If a protocol error occurs
      */
-    private Page executeQueryWithContinuationAdhereToPageSize(String query, int pageSize, String wrappedContinuationToken, String correlatedActivityId) throws IOException, ProtocolException {
+    private Page executeQueryWithContinuationAdhereToPageSize(String query, int pageSize, String currentContinuationToken, String correlatedActivityId) throws IOException, ProtocolException {
         // Build the request URL
         String url = String.format(URL_FORMAT, endpoint, databaseId, containerId);
 
@@ -224,7 +224,6 @@ public class CosmosDbQuerySample {
         httpPost.setHeader(HEADER_MS_DATE, getCurrentUtcDate());
         httpPost.setHeader(HEADER_MS_DOCUMENTDB_IS_QUERY, "true");
         httpPost.setHeader(HEADER_MS_DOCUMENTDB_QUERY_ENABLE_CROSS_PARTITION, "true");
-        httpPost.setHeader(HEADER_MS_MAX_ITEM_COUNT, String.valueOf(pageSize));
 
         // Add correlated activity ID header
         httpPost.setHeader(HEADER_MS_COSMOS_CORRELATED_ACTIVITY_ID, correlatedActivityId);
@@ -244,35 +243,21 @@ public class CosmosDbQuerySample {
         final List<Map<String, Object>> pageSizeCompliantDocuments = new ArrayList<>();
 
         AtomicInteger remainingPageSize = new AtomicInteger(pageSize);
-        AtomicReference<String> skipDocumentsIncludingResourceId = new AtomicReference<>();
-        AtomicReference<String> skipDocumentsPkRangeId = new AtomicReference<>();
         AtomicReference<String> nextPageContinuation = new AtomicReference<>("INF");
-        AtomicReference<String> currentPageContinuation = new AtomicReference<>();
-        AtomicReference<String> lastResourceId = new AtomicReference<>();
-        AtomicReference<String> lastResourceIdPkRangeId = new AtomicReference<>();
-        AtomicReference<String> currentPkRangeId = new AtomicReference<>();
 
-        if (wrappedContinuationToken != null) {
-            String[] continuationFragments = wrappedContinuationToken.split(Pattern.quote("|"));
-            String cosmosContinuationToken = parseCosmosContinuation(continuationFragments[0]);
-
+        if (currentContinuationToken != null && !currentContinuationToken.isEmpty()) {
             // Add continuation token if provided
-            if (cosmosContinuationToken != null && !cosmosContinuationToken.isEmpty()) {
-                nextPageContinuation.set(cosmosContinuationToken);
-                httpPost.setHeader(HEADER_MS_CONTINUATION, cosmosContinuationToken);
-            }
-
-            skipDocumentsIncludingResourceId.set(continuationFragments.length == 3 ? continuationFragments[1] : null);
-            skipDocumentsPkRangeId.set(continuationFragments.length == 3 ? continuationFragments[2] : null);;
+            nextPageContinuation.set(currentContinuationToken);
+            httpPost.setHeader(HEADER_MS_CONTINUATION, currentContinuationToken);
         }
 
-        // x-ms-documentdb-partitionkeyrangeid
-        // x-ms-continuation
         while (nextPageContinuation.get() != null) {
 
             if (!nextPageContinuation.get().equals("INF")) {
                 httpPost.setHeader(HEADER_MS_CONTINUATION, nextPageContinuation.get());
             }
+
+            httpPost.setHeader(HEADER_MS_MAX_ITEM_COUNT, String.valueOf(remainingPageSize.get()));
 
             // Execute the request with the response handler
             Page currentMethodLocalPage = getHttpClient().execute(httpPost, response -> {
@@ -288,20 +273,13 @@ public class CosmosDbQuerySample {
                 if (statusCode >= 200 && statusCode < 300) {
                     // Extract continuation token from response headers
                     String nextContinuationToken = null;
-                    currentPageContinuation.set(!Objects.equals(nextPageContinuation.get(), "INF") ? nextPageContinuation.get() : null);
                     nextPageContinuation.set(null);
                     Header continuationHeader = response.getHeader(HEADER_MS_CONTINUATION);
-                    Header partitionKeyRangeId = response.getHeader("x-ms-documentdb-partitionkeyrangeid");
 
                     if (continuationHeader != null) {
                         nextContinuationToken = continuationHeader.getValue();
                         nextPageContinuation.set(nextContinuationToken);
                         System.out.println("Continuation token found: " + nextContinuationToken);
-                    }
-
-                    if (partitionKeyRangeId != null) {
-                        currentPkRangeId.set(partitionKeyRangeId.getValue());
-                        System.out.println("Partition key range id found : " + currentPkRangeId.get());
                     }
 
                     try {
@@ -330,43 +308,18 @@ public class CosmosDbQuerySample {
                     break;
                 }
 
-                Map<String, Object> currentDoc = currentPageDocuments.get(seenIdx);
-                String currentDocResourceId = (String) currentDoc.get("_rid");
-                String currentDocId = (String) currentDoc.get("id");
-
-                if (!currentPkRangeId.get().equals(skipDocumentsPkRangeId.get())
-                        || skipDocumentsIncludingResourceId.get() == null ||
-                        currentDocResourceId.compareTo(skipDocumentsIncludingResourceId.get()) > 0) {
-
-                    pageSizeCompliantDocuments.add(currentPageDocuments.get(seenIdx));
-                    remainingPageSize.decrementAndGet();
-                    seenIdx++;
-
-                    lastResourceId.set(currentDocResourceId);
-                    lastResourceIdPkRangeId.set(currentPkRangeId.get());
-                } else {
-                    System.out.println(
-                            "Skipping doc " + currentDocId + "("
-                                    + currentPkRangeId.get() + "|" + currentDocResourceId
-                                    + ") because it was returned on previous page already");
-
-                    seenIdx++;
-                }
+                pageSizeCompliantDocuments.add(currentPageDocuments.get(seenIdx));
+                remainingPageSize.decrementAndGet();
+                seenIdx++;
             }
 
             if (remainingPageSize.get() == 0) {
 
-                String base64EncodedCosmosContinuation = currentPageContinuation.get() != null
-                        ? Base64.getEncoder().encodeToString(currentPageContinuation.get().getBytes(StandardCharsets.UTF_8))
+                String nextContinuationToken = nextPageContinuation.get() != null
+                        ? nextPageContinuation.get()
                         : "";
 
-                String returnContinuation = base64EncodedCosmosContinuation
-                        + "|"
-                        + lastResourceId
-                        + "|"
-                        + lastResourceIdPkRangeId;
-
-                return new Page(pageSizeCompliantDocuments, returnContinuation);
+                return new Page(pageSizeCompliantDocuments, nextContinuationToken);
             }
         }
 
@@ -518,9 +471,11 @@ public class CosmosDbQuerySample {
             // Example: Count all documents with pagination
             System.out.println("\n--- Query with where clause ---");
             String queryWithWhereClause = "SELECT * FROM c WHERE c.expectedProcessTime >= '2019-06-01T00:00' AND c.expectedProcessTime <= '2039-06-01T00:00'";
-            int totalItemCount = sample.executeQueryAllPages(queryWithWhereClause, 52); // 10 items per page
+
+            int maxItemCount = 51;
+            int totalItemCount = sample.executeQueryAllPages(queryWithWhereClause, maxItemCount);
             System.out.println("Query: " + queryWithWhereClause);
-            System.out.println("Max Item Count: 10");
+            System.out.println("Max Item Count: " + maxItemCount);
             System.out.println("Total documents: " + totalItemCount);
             
         } catch (IOException | ProtocolException e) {
@@ -528,15 +483,6 @@ public class CosmosDbQuerySample {
         }
     }
 
-    private String parseCosmosContinuation(String firstContinuationFragment) {
-        if (firstContinuationFragment == "") {
-            return null;
-        }
-
-        byte[] cosmosContinuationBlob = Base64.getDecoder().decode(firstContinuationFragment);
-        return new String(cosmosContinuationBlob, StandardCharsets.UTF_8);
-    }
-    
     /**
      * Creates an HTTP client with connection pooling.
      * 
