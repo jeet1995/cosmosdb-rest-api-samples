@@ -19,11 +19,16 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
 
 /**
  * Sample class demonstrating how to query Azure Cosmos DB using the REST API.
@@ -179,12 +184,193 @@ public class CosmosDbQuerySample {
                     System.out.println("Failed to parse documents from response: " + e.getMessage());
                 }
                 
-                return new Page(responseBody, documents, nextContinuationToken);
+                return new Page(documents, nextContinuationToken);
             } else {
                 System.out.println("Query failed with status " + statusCode + ": " + responseBody);
                 throw new IOException("Query failed with status " + statusCode + ": " + responseBody);
             }
         });
+    }
+
+    /**
+     * Executes a SQL query against CosmosDB with pagination support.
+     *
+     * @param query The SQL query to execute
+     * @param pageSize Maximum number of items to return per page
+     * @param wrappedContinuationToken Continuation token for pagination
+     * @param correlatedActivityId The correlated activity ID for tracking related requests
+     * @return The query results as a Page object containing the response body and continuation token
+     * @throws IOException If an I/O error occurs
+     * @throws ProtocolException If a protocol error occurs
+     */
+    private Page executeQueryWithContinuationAdhereToPageSize(String query, int pageSize, String wrappedContinuationToken, String correlatedActivityId) throws IOException, ProtocolException {
+        // Build the request URL
+        String url = String.format(URL_FORMAT, endpoint, databaseId, containerId);
+
+        // Create the request body
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("query", query);
+        requestBody.put("parameters", new Object[0]);
+
+        // Convert request body to JSON
+        String jsonBody = objectMapper.writeValueAsString(requestBody);
+
+        // Create HTTP request
+        HttpPost httpPost = new HttpPost(url);
+
+        // Set required headers
+        httpPost.setHeader(HEADER_CONTENT_TYPE, "application/query+json");
+        httpPost.setHeader(HEADER_MS_VERSION, "2018-12-31");
+        httpPost.setHeader(HEADER_MS_DATE, getCurrentUtcDate());
+        httpPost.setHeader(HEADER_MS_DOCUMENTDB_IS_QUERY, "true");
+        httpPost.setHeader(HEADER_MS_DOCUMENTDB_QUERY_ENABLE_CROSS_PARTITION, "true");
+        httpPost.setHeader(HEADER_MS_MAX_ITEM_COUNT, String.valueOf(pageSize));
+
+        // Add correlated activity ID header
+        httpPost.setHeader(HEADER_MS_COSMOS_CORRELATED_ACTIVITY_ID, correlatedActivityId);
+
+        // Set continuation token size limit to 2KB
+        httpPost.setHeader(HEADER_MS_DOCUMENTDB_RESPONSE_CONTINUATION_TOKEN_LIMIT_IN_KB, "2");
+
+        httpPost.setHeader(HEADER_AUTHORIZATION, generateAuthorizationToken("POST", "docs", "dbs/" + databaseId + "/colls/" + containerId));
+
+        // Set request body
+        httpPost.setEntity(new StringEntity(jsonBody, ContentType.APPLICATION_JSON));
+
+        // Execute request using response handler
+        System.out.println("Executing query: " + query + " with maxItemCount: " + pageSize);
+
+        // Parse the response to extract documents
+        final List<Map<String, Object>> pageSizeCompliantDocuments = new ArrayList<>();
+
+        AtomicInteger remainingPageSize = new AtomicInteger(pageSize);
+        AtomicReference<String> skipDocumentsIncludingResourceId = new AtomicReference<>();
+        AtomicReference<String> skipDocumentsPkRangeId = new AtomicReference<>();
+        AtomicReference<String> nextPageContinuation = new AtomicReference<>("INF");
+        AtomicReference<String> currentPageContinuation = new AtomicReference<>();
+        AtomicReference<String> lastResourceId = new AtomicReference<>();
+        AtomicReference<String> lastResourceIdPkRangeId = new AtomicReference<>();
+        AtomicReference<String> currentPkRangeId = new AtomicReference<>();
+
+        if (wrappedContinuationToken != null) {
+            String[] continuationFragments = wrappedContinuationToken.split(Pattern.quote("|"));
+            String cosmosContinuationToken = parseCosmosContinuation(continuationFragments[0]);
+
+            // Add continuation token if provided
+            if (cosmosContinuationToken != null && !cosmosContinuationToken.isEmpty()) {
+                nextPageContinuation.set(cosmosContinuationToken);
+                httpPost.setHeader(HEADER_MS_CONTINUATION, cosmosContinuationToken);
+            }
+
+            skipDocumentsIncludingResourceId.set(continuationFragments.length == 3 ? continuationFragments[1] : null);
+            skipDocumentsPkRangeId.set(continuationFragments.length == 3 ? continuationFragments[2] : null);;
+        }
+
+        // x-ms-documentdb-partitionkeyrangeid
+        // x-ms-continuation
+        while (nextPageContinuation.get() != null) {
+
+            if (!nextPageContinuation.get().equals("INF")) {
+                httpPost.setHeader(HEADER_MS_CONTINUATION, nextPageContinuation.get());
+            }
+
+            // Execute the request with the response handler
+            Page currentMethodLocalPage = getHttpClient().execute(httpPost, response -> {
+                int statusCode = response.getCode();
+                String responseBody;
+                try {
+                    responseBody = EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
+                } catch (ParseException e) {
+                    throw new IOException("Failed to parse response", e);
+                }
+
+                System.out.println("Query response status: " + statusCode);
+                if (statusCode >= 200 && statusCode < 300) {
+                    // Extract continuation token from response headers
+                    String nextContinuationToken = null;
+                    currentPageContinuation.set(!Objects.equals(nextPageContinuation.get(), "INF") ? nextPageContinuation.get() : null);
+                    nextPageContinuation.set(null);
+                    Header continuationHeader = response.getHeader(HEADER_MS_CONTINUATION);
+                    Header partitionKeyRangeId = response.getHeader("x-ms-documentdb-partitionkeyrangeid");
+
+                    if (continuationHeader != null) {
+                        nextContinuationToken = continuationHeader.getValue();
+                        nextPageContinuation.set(nextContinuationToken);
+                        System.out.println("Continuation token found: " + nextContinuationToken);
+                    }
+
+                    if (partitionKeyRangeId != null) {
+                        currentPkRangeId.set(partitionKeyRangeId.getValue());
+                        System.out.println("Partition key range id found : " + currentPkRangeId.get());
+                    }
+
+                    try {
+                        Map<String, Object> responseMap = objectMapper.readValue(responseBody, Map.class);
+                        if (responseMap.containsKey("Documents")) {
+                            List<Map<String, Object>> documentsFromResponse = (List<Map<String, Object>>) responseMap.get("Documents");
+                            return new Page(documentsFromResponse, nextContinuationToken);
+                        }
+                    } catch (Exception e) {
+                        System.out.println("Failed to parse documents from response: " + e.getMessage());
+                    }
+                } else {
+                    System.out.println("Query failed with status " + statusCode + ": " + responseBody);
+                    throw new IOException("Query failed with status " + statusCode + ": " + responseBody);
+                }
+
+                return new Page(null, null);
+            });
+
+            int seenIdx = 0;
+            List<Map<String, Object>> currentPageDocuments = currentMethodLocalPage.documents;
+
+            while (remainingPageSize.get() > 0 && currentPageDocuments != null) {
+
+                if (seenIdx == currentPageDocuments.size()) {
+                    break;
+                }
+
+                Map<String, Object> currentDoc = currentPageDocuments.get(seenIdx);
+                String currentDocResourceId = (String) currentDoc.get("_rid");
+                String currentDocId = (String) currentDoc.get("id");
+
+                if (!currentPkRangeId.get().equals(skipDocumentsPkRangeId.get())
+                        || skipDocumentsIncludingResourceId.get() == null ||
+                        currentDocResourceId.compareTo(skipDocumentsIncludingResourceId.get()) > 0) {
+
+                    pageSizeCompliantDocuments.add(currentPageDocuments.get(seenIdx));
+                    remainingPageSize.decrementAndGet();
+                    seenIdx++;
+
+                    lastResourceId.set(currentDocResourceId);
+                    lastResourceIdPkRangeId.set(currentPkRangeId.get());
+                } else {
+                    System.out.println(
+                            "Skipping doc " + currentDocId + "("
+                                    + currentPkRangeId.get() + "|" + currentDocResourceId
+                                    + ") because it was returned on previous page already");
+
+                    seenIdx++;
+                }
+            }
+
+            if (remainingPageSize.get() == 0) {
+
+                String base64EncodedCosmosContinuation = currentPageContinuation.get() != null
+                        ? Base64.getEncoder().encodeToString(currentPageContinuation.get().getBytes(StandardCharsets.UTF_8))
+                        : "";
+
+                String returnContinuation = base64EncodedCosmosContinuation
+                        + "|"
+                        + lastResourceId
+                        + "|"
+                        + lastResourceIdPkRangeId;
+
+                return new Page(pageSizeCompliantDocuments, returnContinuation);
+            }
+        }
+
+        return new Page(pageSizeCompliantDocuments, null);
     }
 
     /**
@@ -210,7 +396,7 @@ public class CosmosDbQuerySample {
             System.out.println("Fetching page " + pageCount + " of results");
             
             // Execute query with continuation token
-            Page page = executeQueryWithContinuation(query, maxItemCount, continuationToken, correlatedActivityId);
+            Page page = executeQueryWithContinuationAdhereToPageSize(query, maxItemCount, continuationToken, correlatedActivityId);
             continuationToken = page.getContinuationToken();
             
             // Count documents in this page
@@ -281,32 +467,20 @@ public class CosmosDbQuerySample {
      * Contains the raw response body, parsed documents, and continuation token.
      */
     public static class Page {
-        private final String responseBody;
         private final List<Map<String, Object>> documents;
         private final String continuationToken;
         
         /**
          * Constructor for Page.
-         * 
-         * @param responseBody The raw response body as a JSON string
+         *
          * @param documents The parsed documents from the response
          * @param continuationToken The continuation token for the next page
          */
-        public Page(String responseBody, List<Map<String, Object>> documents, String continuationToken) {
-            this.responseBody = responseBody;
+        public Page(List<Map<String, Object>> documents, String continuationToken) {
             this.documents = documents;
             this.continuationToken = continuationToken;
         }
-        
-        /**
-         * Gets the raw response body.
-         * 
-         * @return The response body as a JSON string
-         */
-        public String getResponseBody() {
-            return responseBody;
-        }
-        
+
         /**
          * Gets the parsed documents from the response.
          * 
@@ -352,6 +526,15 @@ public class CosmosDbQuerySample {
         } catch (IOException | ProtocolException e) {
             System.out.println("Error executing query: " + e.getMessage());
         }
+    }
+
+    private String parseCosmosContinuation(String firstContinuationFragment) {
+        if (firstContinuationFragment == "") {
+            return null;
+        }
+
+        byte[] cosmosContinuationBlob = Base64.getDecoder().decode(firstContinuationFragment);
+        return new String(cosmosContinuationBlob, StandardCharsets.UTF_8);
     }
     
     /**
