@@ -19,16 +19,13 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.regex.Pattern;
 
 /**
  * Sample class demonstrating how to query Azure Cosmos DB using the REST API.
@@ -203,7 +200,7 @@ public class CosmosDbQuerySample {
      * @throws IOException If an I/O error occurs
      * @throws ProtocolException If a protocol error occurs
      */
-    private Page executeQueryWithContinuationAdhereToPageSize(String query, int pageSize, String currentContinuationToken, String correlatedActivityId) throws IOException, ProtocolException {
+    private Page executeQueryWithPageSizeAdherence(String query, int pageSize, String currentContinuationToken, String correlatedActivityId) throws IOException, ProtocolException {
         // Build the request URL
         String url = String.format(URL_FORMAT, endpoint, databaseId, containerId);
 
@@ -349,7 +346,7 @@ public class CosmosDbQuerySample {
             System.out.println("Fetching page " + pageCount + " of results");
             
             // Execute query with continuation token
-            Page page = executeQueryWithContinuationAdhereToPageSize(query, maxItemCount, continuationToken, correlatedActivityId);
+            Page page = executeQueryWithPageSizeAdherence(query, maxItemCount, continuationToken, correlatedActivityId);
             continuationToken = page.getContinuationToken();
             
             // Count documents in this page
