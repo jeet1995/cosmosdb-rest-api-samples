@@ -299,12 +299,7 @@ public class CosmosDbQuerySample {
             int seenIdx = 0;
             List<Map<String, Object>> currentPageDocuments = currentMethodLocalPage.documents;
 
-            while (remainingPageSize.get() > 0 && currentPageDocuments != null) {
-
-                if (seenIdx == currentPageDocuments.size()) {
-                    break;
-                }
-
+            while (remainingPageSize.get() > 0 && (currentPageDocuments != null && seenIdx < currentPageDocuments.size())) {
                 pageSizeCompliantDocuments.add(currentPageDocuments.get(seenIdx));
                 remainingPageSize.decrementAndGet();
                 seenIdx++;
